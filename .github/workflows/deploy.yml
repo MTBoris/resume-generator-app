@@ -1,0 +1,81 @@
+name: Deploy Resume Generator App
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  deploy-backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      
+      - name: Set up Node.js
+        uses: actions/setup-node@v2
+        with:
+          node-version: '14'
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+      
+      - name: Install dependencies
+        run: |
+          cd backend
+          npm install
+          
+      - name: Create Lambda Layer
+        run: |
+          cd backend/lambda-layer
+          mkdir -p nodejs
+          npm install --prefix nodejs stripe uuid pdfkit aws-sdk openai
+          zip -r lambda-layer.zip nodejs
+      
+      - name: Deploy Lambda Layer
+        run: |
+          aws lambda publish-layer-version \
+            --layer-name ResumeAppDependencies \
+            --description "Dependencies for Resume Generator App" \
+            --zip-file fileb://backend/lambda-layer/lambda-layer.zip \
+            --compatible-runtimes nodejs14.x nodejs16.x nodejs18.x
+      
+      - name: Deploy Lambda Functions
+        run: |
+          cd backend
+          for func in GenerateResume ProcessPayment; do
+            zip -r ${func}.zip ${func}.js
+            aws lambda update-function-code \
+              --function-name ${func} \
+              --zip-file fileb://${func}.zip
+          done
+  
+  deploy-frontend:
+    runs-on: ubuntu-latest
+    needs: deploy-backend
+    steps:
+      - uses: actions/checkout@v2
+      
+      - name: Set up Node.js
+        uses: actions/setup-node@v2
+        with:
+          node-version: '14'
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+      
+      - name: Install dependencies and build
+        run: |
+          cd frontend
+          npm install
+          npm run build
+      
+      - name: Deploy to S3
+        run: |
+          aws s3 sync frontend/build/ s3://resume-generator-frontend --delete
